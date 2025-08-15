@@ -78,7 +78,8 @@ logger = logging.getLogger(__name__)
 
 # Define conflict keys per sheet (must match normalized column names)
 CONFLICT_KEYS = {
-    "vendor_search_results": ["uniqueid", "b2gnow_vendor_number"]
+    "vendor_search_results": ["uniqueid", "b2gnow_vendor_number"],
+    "wa_geographical_district": ["unique_id","zipcode"]
 }
 
 def canonicalize(value):
