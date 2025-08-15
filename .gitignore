@@ -1,0 +1,24 @@
+
+# Python bytecode
+__pycache__/
+*.pyc
+
+# Virtual environment
+.venv/
+
+# Environment variables and secrets
+.env
+.env.local
+# Data exports (auto-generated)
+CSV/
+
+# IDE/project settings
+.vscode/
+.idea/
+
+# User-specific or personal work
+personal_area/
+
+# OS-specific files
+.DS_Store
+Thumbs.db

@@ -1,0 +1,30 @@
+
+This one create the unique ID
+=let
+    // pull fields
+    district   = Text.From([District]),
+    zipcode    = Text.PadStart(Text.From([Zipcode]), 5, "0"),
+    splitWhole = if [#"Split/whole Combined"] <> null then Text.From([#"Split/whole Combined"]) else "",
+
+    // make the seed include DISTRICT so it differs across districts
+    seed       = Text.Upper(district & "|" & zipcode & "|" & splitWhole),
+
+    // base64 -> strip '=' -> lower -> (optional) shorten
+    hashFull   = Text.Replace(Text.From(Binary.ToText(Text.ToBinary(seed), BinaryEncoding.Base64)), "=", ""),
+    hashShort  = Text.Lower(Text.Start(hashFull, 12)),
+
+    // final id: district first, then unique code
+    result     = district & "-" & hashShort
+in
+    result
+
+
+cehck if two columns together are unique or if the combo ever repeats 
+=COUNTIFS(Q:Q,Q2,T:T,T2)>1
+
+
+=IF(COUNTIFS(Q:Q,Q2,T:T,T2)>1,"Duplicate","Unique")
+
+
+Count all duplicates in one column 
+=SUM(--(COUNTIF(AN:AN,AN:AN)>1)/COUNTIF(AN:AN,AN:AN))
