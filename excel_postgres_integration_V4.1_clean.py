@@ -79,7 +79,8 @@ logger = logging.getLogger(__name__)
 # Define conflict keys per sheet (must match normalized column names)
 CONFLICT_KEYS = {
     "vendor_search_results": ["uniqueid", "b2gnow_vendor_number"],
-    "wa_geographical_district": ["unique_id","zipcode"]
+    "wa_geographical_district": ["unique_id","zipcode"],
+    "afers_ofm": ["index"]
 }
 
 def canonicalize(value):
@@ -135,8 +136,33 @@ def process_sheet(engine, sheet_name, df, schema_name):
             # Convert to string and strip whitespace
             df[key] = df[key].astype("string").str.strip()
     
-    # Drop rows with missing conflict keys
+    # Find rows that would be dropped
     before = len(df)
+    mask_na = df[keys].isna().any(axis=1)
+    mask_empty = pd.DataFrame(False, index=df.index, columns=['empty'])
+    for key in keys:
+        mask_empty['empty'] |= (df[key] == "")
+    
+    rows_to_drop = mask_na | mask_empty['empty']
+    
+    # If rows will be dropped, save them to CSV for inspection
+    if rows_to_drop.any():
+        num_dropped = rows_to_drop.sum()
+        logger.warning(f"Found {num_dropped} rows with missing/empty conflict keys: {keys}")
+        
+        # Save dropped rows to CSV for analysis (only first 100 to avoid huge files)
+        dropped_df = df[rows_to_drop].head(100).copy()
+        dropped_file = f"dropped_rows_{sheet_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        dropped_df.to_csv(dropped_file, index=False)
+        logger.info(f"Saved first 100 dropped rows to '{dropped_file}' for inspection")
+        
+        # Show just first 3 rows in console as examples
+        logger.info("Sample of dropped rows:")
+        for idx, row in df[rows_to_drop].head(3).iterrows():
+            key_values = {k: f"'{row[k]}'" if pd.notna(row[k]) else 'NULL' for k in keys}
+            logger.info(f"  Row {idx}: {key_values}")
+    
+    # Drop rows with missing conflict keys
     df = df.dropna(subset=keys)
     for key in keys:
         df = df[df[key] != ""]
