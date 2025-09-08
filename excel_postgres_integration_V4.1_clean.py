@@ -80,7 +80,8 @@ logger = logging.getLogger(__name__)
 CONFLICT_KEYS = {
     "vendor_search_results": ["uniqueid", "b2gnow_vendor_number"],
     "wa_geographical_district": ["unique_id","zipcode"],
-    "afers_ofm": ["index"]
+    "afers_ofm": ["index"],
+    "gross_receipts": ["index"]
 }
 
 def canonicalize(value):
