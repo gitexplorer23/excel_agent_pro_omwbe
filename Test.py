@@ -2,7 +2,7 @@ import pyautogui
 import time
 import random
 
-def keep_awake():
+def work_agent():
     """
     Moves the mouse slightly at random intervals to prevent sleep mode.
     Press Ctrl+C to stop the script.
@@ -39,5 +39,5 @@ def keep_awake():
 if __name__ == "__main__":
     # Disable pyautogui failsafe (optional - removes need to move mouse to corner to stop)
     # pyautogui.FAILSAFE = False
-    
-    keep_awake()
+
+    work_agent()
