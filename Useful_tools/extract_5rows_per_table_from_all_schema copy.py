@@ -7,7 +7,7 @@ from sqlalchemy import text
 # Load environment variables
 load_dotenv()
 DATABASE_URL = os.getenv("DATABASE_URL")
-SCHEMA_NAME = os.getenv("SCHEMA_NAME", "public")
+SCHEMA_NAME = os.getenv("SCHEMA_NAME", "ppt")
 EXPORT_PATH = os.getenv("EXPORT_PATH", ".")  # Default to current directory
 
 # Ensure export path exists
