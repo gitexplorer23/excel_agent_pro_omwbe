@@ -16,7 +16,7 @@ KEY FEATURES:
 - Stale data cleanup (removes rows no longer present in source)
 - Audit trail with created_at/updated_at timestamps
 - Conflict resolution using configurable unique keys per sheet
-- Schema and table auto-creation if they don't existclear
+- Schema and table auto-creation if they don't exist
 
 HOW IT WORKS:
 1. Reads specified Excel sheets from the configured file
@@ -80,11 +80,9 @@ logger = logging.getLogger(__name__)
 CONFLICT_KEYS = {
     "vendor_search_results": ["uniqueid", "b2gnow_vendor_number"],
     "wa_geographical_district": ["unique_id","zipcode"],
-    "afrs_ofm": ["index"],
+    "afers_ofm": ["index"],
     "gross_receipts": ["index"],
-    "contract_powerbi_export": ["index"],
-    "ofmagencymapping": ["index"],
-    "agency_goals": ["index"],
+    "powerbi_export": ["index"]
 }
 
 def canonicalize(value):
@@ -108,11 +106,19 @@ def canonicalize(value):
     # Everything else as string
     return str(value).strip()
 
+from sqlalchemy import text, MetaData, Table, inspect  # already present
+from sqlalchemy.dialects.postgresql import insert      # already present
+
+def chunked(seq, size):
+    """Yield slices of seq of length <= size."""
+    for i in range(0, len(seq), size):
+        yield seq[i:i+size]
+
 def process_sheet(engine, sheet_name, df, schema_name):
-    """Process a single Excel sheet and sync with database."""
+    """Process a single Excel sheet and sync with database (batched + safe delete)."""
     start_time = time.time()
     logger.info(f"▶ Processing sheet '{sheet_name}'")
-    
+
     # 1) Normalize column names (spaces to underscores, lowercase)
     df.columns = (
         df.columns
@@ -120,60 +126,60 @@ def process_sheet(engine, sheet_name, df, schema_name):
         .str.replace(' ', '_', regex=False)
         .str.lower()
     )
-    
+
     # 2) Log detected data types
     logger.info(f"Detected dtypes for '{sheet_name}':\n{df.dtypes}")
-    
+
     # 3) Convert to best possible dtypes
     df = df.convert_dtypes()
-    
+
+    # Optional: trim whitespace on all string columns
+    for col in df.select_dtypes(include=["string", "object"]).columns:
+        try:
+            df[col] = df[col].astype("string").str.strip()
+        except Exception:
+            pass
+
     # 4) Get conflict keys for this sheet
     keys = CONFLICT_KEYS.get(sheet_name)
     if not keys:
         logger.error(f"No conflict keys defined for sheet '{sheet_name}'")
-        logger.info(f"Add this sheet to CONFLICT_KEYS dictionary with appropriate unique columns")
+        logger.info("Add this sheet to CONFLICT_KEYS with appropriate unique columns")
         sys.exit(1)
-    
+
     # 5) Clean and validate conflict key columns
     for key in keys:
         if key in df.columns:
-            # Convert to string and strip whitespace
             df[key] = df[key].astype("string").str.strip()
-    
-    # Find rows that would be dropped
+
+    # Identify rows to drop due to missing/empty keys
     before = len(df)
     mask_na = df[keys].isna().any(axis=1)
     mask_empty = pd.DataFrame(False, index=df.index, columns=['empty'])
     for key in keys:
         mask_empty['empty'] |= (df[key] == "")
-    
     rows_to_drop = mask_na | mask_empty['empty']
-    
-    # If rows will be dropped, save them to CSV for inspection
+
     if rows_to_drop.any():
-        num_dropped = rows_to_drop.sum()
+        num_dropped = int(rows_to_drop.sum())
         logger.warning(f"Found {num_dropped} rows with missing/empty conflict keys: {keys}")
-        
-        # Save dropped rows to CSV for analysis (only first 100 to avoid huge files)
         dropped_df = df[rows_to_drop].head(100).copy()
         dropped_file = f"dropped_rows_{sheet_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
         dropped_df.to_csv(dropped_file, index=False)
-        logger.info(f"Saved first 100 dropped rows to '{dropped_file}' for inspection")
-        
-        # Show just first 3 rows in console as examples
+        logger.info(f"Saved first 100 dropped rows to '{dropped_file}'")
         logger.info("Sample of dropped rows:")
         for idx, row in df[rows_to_drop].head(3).iterrows():
             key_values = {k: f"'{row[k]}'" if pd.notna(row[k]) else 'NULL' for k in keys}
             logger.info(f"  Row {idx}: {key_values}")
-    
-    # Drop rows with missing conflict keys
+
+    # Drop invalid key rows
     df = df.dropna(subset=keys)
     for key in keys:
         df = df[df[key] != ""]
     dropped = before - len(df)
     if dropped:
         logger.warning(f"Dropped {dropped} rows due to missing conflict keys: {keys}")
-    
+
     # 6) Calculate row hash for change detection
     immutable_cols = ('created_at', 'updated_at', 'row_hash')
     data_cols = [c for c in df.columns if c not in immutable_cols]
@@ -183,24 +189,26 @@ def process_sheet(engine, sheet_name, df, schema_name):
         ).hexdigest(),
         axis=1
     )
-    
+
     # 7) Add updated_at timestamp
-    df['updated_at'] = datetime.now()
-    
-    # 8) Check for duplicate hashes
-    dup = df['row_hash'].duplicated().sum()
+    now_ts = datetime.now()
+    df['updated_at'] = now_ts
+
+    # 8) Duplicate hash notice
+    dup = int(df['row_hash'].duplicated().sum())
     if dup:
         logger.warning(f"{dup} duplicate row_hash values in '{sheet_name}'")
-    
+
     # 9) Check if table exists
     inspector = inspect(engine)
     table_exists = inspector.has_table(sheet_name, schema=schema_name)
-    
+
+    # ---- DB work in a single transaction
     with engine.begin() as conn:
-        # Set schema search path
+        # Use target schema
         conn.execute(text(f"SET search_path TO {schema_name}"))
-        
-        # 10) Create table if it doesn't exist
+
+        # 10) Create table if needed
         if not table_exists:
             df.head(0).to_sql(
                 name=sheet_name,
@@ -210,8 +218,8 @@ def process_sheet(engine, sheet_name, df, schema_name):
                 index=False
             )
             logger.info(f"✓ Created table '{schema_name}.{sheet_name}'")
-        
-        # 11) Ensure audit columns exist
+
+        # 11) Ensure audit columns
         conn.execute(text(f"""
             ALTER TABLE {schema_name}.{sheet_name}
               ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -220,8 +228,8 @@ def process_sheet(engine, sheet_name, df, schema_name):
             ALTER TABLE {schema_name}.{sheet_name}
               ALTER COLUMN updated_at DROP DEFAULT;
         """))
-        
-        # 12) Create unique constraint if it doesn't exist
+
+        # 12) Unique constraint on keys
         constraint_name = f"uq_{sheet_name}_{'_'.join(keys)}"
         cols_list = ", ".join(keys)
         conn.execute(text(f"""
@@ -236,49 +244,78 @@ def process_sheet(engine, sheet_name, df, schema_name):
               END IF;
             END $$;
         """))
-        
-        # 13) Reflect table metadata for upsert
+
+        # 13) Reflect table metadata
         metadata = MetaData()
         table = Table(sheet_name, metadata, autoload_with=conn, schema=schema_name)
-        
-        # 14) Convert NaN to None for proper NULL handling
+
+        # 14) Convert NaN/NaT to None for proper NULL handling
         df = df.where(pd.notna(df), None)
-        
-        # 15) Prepare upsert statement
+
+        # -------------------------
+        # 15) Batched UPSERT (executemany)
+        # -------------------------
         records = df.to_dict(orient='records')
-        stmt = insert(table).values(records)
-        
-        # Define columns to update (exclude keys and created_at)
-        update_cols = {
-            c.name: stmt.excluded[c.name]
-            for c in table.columns
-            if c.name not in (*keys, 'created_at')
-        }
-        update_cols['updated_at'] = text('now()')
-        
-        # 16) Execute upsert with change detection
-        upsert = stmt.on_conflict_do_update(
-            index_elements=keys,
-            set_=update_cols,
-            where=(table.c.row_hash != stmt.excluded.row_hash)
-        )
-        result = conn.execute(upsert)
-        logger.info(f"Upserted {result.rowcount} rows (only changed data)")
-        
-        # 17) Delete stale rows not in source
-        incoming_hashes = tuple(df['row_hash'].unique())
+        if not records:
+            logger.info("No rows to upsert.")
+        else:
+            # Columns to update (exclude keys and created_at)
+            base_stmt = insert(table)
+            update_cols = {
+                c.name: base_stmt.excluded[c.name]
+                for c in table.columns
+                if c.name not in (*keys, 'created_at')
+            }
+            # Ensure updated_at is server-side "now()"
+            update_cols['updated_at'] = text('now()')
+
+            upsert_stmt = base_stmt.on_conflict_do_update(
+                index_elements=keys,
+                set_=update_cols,
+                where=(table.c.row_hash != base_stmt.excluded.row_hash)
+            )
+
+            CHUNK = 1000  # tune for your environment/driver
+            total_upserted = 0
+            for batch in chunked(records, CHUNK):
+                res = conn.execute(upsert_stmt, batch)  # list-of-dicts => executemany
+                # rowcount may be None on some drivers; guard it
+                if hasattr(res, "rowcount") and res.rowcount is not None:
+                    total_upserted += res.rowcount
+            logger.info(f"Upserted ~{total_upserted} rows (changed/new only)")
+
+        # -------------------------
+        # 16) Delete stale rows safely (temp table + NOT EXISTS)
+        # -------------------------
+        incoming_hashes = df['row_hash'].dropna().unique().tolist()
         if incoming_hashes:
+            # Create a temp table for hashes (drops automatically at txn end)
+            conn.execute(text("CREATE TEMP TABLE tmp_hashes (row_hash text PRIMARY KEY) ON COMMIT DROP"))
+
+            # Bulk insert hashes in chunks to avoid huge VALUES lists
+            insert_tmp = text("INSERT INTO tmp_hashes (row_hash) VALUES (:row_hash)")
+            HASH_CHUNK = 5000
+            payload = [{"row_hash": h} for h in incoming_hashes]
+            for batch in chunked(payload, HASH_CHUNK):
+                conn.execute(insert_tmp, batch)
+
+            # Delete rows not present in current source
             delete_stmt = text(f"""
-                DELETE FROM {schema_name}.{sheet_name}
-                WHERE row_hash IS NOT NULL
-                  AND row_hash NOT IN :hashes
-            """).bindparams(hashes=incoming_hashes)
-            deleted = conn.execute(delete_stmt).rowcount
-            if deleted > 0:
+                DELETE FROM {schema_name}.{sheet_name} t
+                WHERE t.row_hash IS NOT NULL
+                  AND NOT EXISTS (
+                    SELECT 1 FROM tmp_hashes h WHERE h.row_hash = t.row_hash
+                  )
+            """)
+            deleted = conn.execute(delete_stmt).rowcount or 0
+            if deleted:
                 logger.info(f"🗑️ Deleted {deleted} stale rows")
-    
+        else:
+            logger.info("No incoming hashes; skipped stale-row cleanup")
+
     elapsed = time.time() - start_time
     logger.info(f"✔ Finished '{sheet_name}' in {elapsed:.2f}s\n")
+
 
 def process_excel_tabs(engine, excel_file, sheet_list, schema_name):
     """Process multiple Excel sheets from a file."""
