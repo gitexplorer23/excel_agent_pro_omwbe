@@ -79,12 +79,18 @@ logger = logging.getLogger(__name__)
 # Define conflict keys per sheet (must match normalized column names)
 CONFLICT_KEYS = {
     "vendor_search_results": ["uniqueid", "b2gnow_vendor_number"],
+    "vendor_search_results_live": ["uniqueid", "b2gnow_vendor_number"],
     "wa_geographical_district": ["unique_id","zipcode"],
     "afrs_ofm": ["index"],
     "gross_receipts": ["index"],
-    "contract_powerbi_export": ["index"],
+    "contract_powerbi": ["index"],
     "ofmagencymapping": ["index"],
     "agency_goals": ["index"],
+    "higher_edu": ["index"],
+    "industry_naics": ["index"],
+    "b2g_api_taxid": ["index"],
+    "agency_goals": ["index"],
+    "agency_higher_ed_combine": ["index"]
 }
 
 def canonicalize(value):
