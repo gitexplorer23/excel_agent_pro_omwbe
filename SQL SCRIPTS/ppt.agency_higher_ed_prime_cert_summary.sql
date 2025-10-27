@@ -27,7 +27,7 @@ primes_canon AS (
   FROM ppt.agency_higher_ed_prime_totals p
 ),
 
--- Canonicalize contract summary and get tax_id from underlying contract data
+-- Canonicalize contract summary and get tax_id
 contract_summary_canon AS (
   SELECT
     c.prime_vendor,
@@ -36,7 +36,6 @@ contract_summary_canon AS (
     c.certified_subs_spend,
     c.uncertified_subs_spend,
     c.sub_count,
-    -- Get tax_id from the PRIME rows in contract_powerbi_cert_totals
     (SELECT DISTINCT ct.tax_id 
      FROM ppt.contract_powerbi_cert_totals ct 
      WHERE ct.prime_vendor = c.prime_vendor 
@@ -56,7 +55,7 @@ contract_summary_canon AS (
   FROM ppt.contract_prime_cert_spend_summary c
 ),
 
--- Step 1: Match by tax_id
+-- Step 1: Match by tax_id - aggregate to prevent duplicates
 matched_by_tax AS (
   SELECT
     p.source,
@@ -68,10 +67,10 @@ matched_by_tax AS (
     p.prime_matched_tax_id,
     p.prime_match_method,
     p.prime_total_amount,
-    c.total_subs_amount,
-    c.certified_subs_spend,
-    c.uncertified_subs_spend,
-    c.sub_count,
+    SUM(c.total_subs_amount) AS total_subs_amount,
+    SUM(c.certified_subs_spend) AS certified_subs_spend,
+    SUM(c.uncertified_subs_spend) AS uncertified_subs_spend,
+    SUM(c.sub_count) AS sub_count,
     'tax_id' AS match_method
   FROM primes_canon p
   INNER JOIN contract_summary_canon c
@@ -79,6 +78,9 @@ matched_by_tax AS (
     AND c.prime_tax_id IS NOT NULL
     AND p.prime_matched_tax_id::text = c.prime_tax_id::text
     AND p.canon_agency_name = c.canon_agency_name
+  GROUP BY p.source, p.agency_number, p.agency_name, p.prime_vendor,
+           p.prime_tax_id, p.prime_certification_type, p.prime_matched_tax_id,
+           p.prime_match_method, p.prime_total_amount
 ),
 
 -- Step 2: Primes that didn't match by tax_id
@@ -93,7 +95,7 @@ primes_unmatched_by_tax AS (
   WHERE mt.source IS NULL
 ),
 
--- Step 3: Match remaining by name
+-- Step 3: Match remaining by name - aggregate to prevent duplicates
 matched_by_name AS (
   SELECT
     p.source,
@@ -105,15 +107,18 @@ matched_by_name AS (
     p.prime_matched_tax_id,
     p.prime_match_method,
     p.prime_total_amount,
-    c.total_subs_amount,
-    c.certified_subs_spend,
-    c.uncertified_subs_spend,
-    c.sub_count,
+    SUM(c.total_subs_amount) AS total_subs_amount,
+    SUM(c.certified_subs_spend) AS certified_subs_spend,
+    SUM(c.uncertified_subs_spend) AS uncertified_subs_spend,
+    SUM(c.sub_count) AS sub_count,
     'name' AS match_method
   FROM primes_unmatched_by_tax p
   INNER JOIN contract_summary_canon c
     ON p.canon_prime_vendor = c.canon_prime_vendor
     AND p.canon_agency_name = c.canon_agency_name
+  GROUP BY p.source, p.agency_number, p.agency_name, p.prime_vendor,
+           p.prime_tax_id, p.prime_certification_type, p.prime_matched_tax_id,
+           p.prime_match_method, p.prime_total_amount
 ),
 
 -- Combine all matches
@@ -123,7 +128,7 @@ all_matches AS (
   SELECT * FROM matched_by_name
 )
 
--- Final output: all primes with their sub totals (matched or not)
+-- Final output
 SELECT
   p.source,
   p.agency_number,
@@ -135,7 +140,6 @@ SELECT
   p.prime_match_method,
   p.prime_total_amount,
   
-  -- Contract sub totals (NULL if no match)
   COALESCE(m.total_subs_amount, 0) AS total_subs_amount,
   COALESCE(m.certified_subs_spend, 0) AS certified_subs_spend,
   COALESCE(m.uncertified_subs_spend, 0) AS uncertified_subs_spend,
@@ -144,18 +148,13 @@ SELECT
   
   -- Certified Spend Calculation
   CASE
-    -- Prime has qualifying certification
     WHEN UPPER(TRIM(p.prime_certification_type)) IN ('MBE', 'WBE', 'MWBE', 'SEDBE', 'CBE') THEN
       CASE
-        -- Has uncertified subs: subtract them from prime total
         WHEN COALESCE(m.uncertified_subs_spend, 0) > 0 
         THEN p.prime_total_amount - m.uncertified_subs_spend
-        -- No uncertified subs: certified spend = prime total
         ELSE p.prime_total_amount
       END
-    -- Prime does NOT have qualifying certification
     ELSE
-      -- Certified spend = only certified subs
       COALESCE(m.certified_subs_spend, 0)
   END AS total_certified_spend
 
@@ -166,7 +165,6 @@ LEFT JOIN all_matches m
   AND p.agency_name = m.agency_name
   AND p.prime_vendor = m.prime_vendor;
 
--- Indexes
 CREATE INDEX IF NOT EXISTS ix_prime_cert_summary_agency_prime
   ON ppt.agency_higher_ed_prime_cert_summary (agency_name, prime_vendor);
 CREATE INDEX IF NOT EXISTS ix_prime_cert_summary_source
