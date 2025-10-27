@@ -90,7 +90,9 @@ CONFLICT_KEYS = {
     "industry_naics": ["index"],
     "b2g_api_taxid": ["index"],
     "agency_goals": ["index"],
-    "agency_higher_ed_combine": ["index"]
+    "agency_higher_ed_combine": ["index"],
+    "vendor_search_results_taxid": ["index"],
+    "contract_powerbi": ["index"],
 }
 
 def canonicalize(value):
